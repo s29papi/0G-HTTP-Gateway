@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "nodenext",              // or "node16" if you prefer
+    "moduleResolution": "nodenext",    // important: lets TS resolve modern package layouts
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] }
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", "tests"]
+}

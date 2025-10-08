@@ -1,0 +1,40 @@
+{
+  "name": "0g-http-gateway",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/gateway.js",
+    "dev": "ts-node src/gateway.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/s29papi/0G-HTTP-Gateway.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/s29papi/0G-HTTP-Gateway/issues"
+  },
+  "homepage": "https://github.com/s29papi/0G-HTTP-Gateway#readme",
+  "description": "",
+  "dependencies": {
+    "@0glabs/0g-ts-sdk": "^0.3.1",
+    "@searchboxlabs/metalayer": "^1.0.2",
+    "dotenv": "^17.2.3",
+    "ethers": "^6.13.1",
+    "express": "^5.1.0",
+    "fs-extra": "^11.3.2",
+    "lru-cache": "^11.2.2",
+    "mime": "^4.1.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
+    "viem": "^2.38.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.7.0",
+    "tsconfig-paths": "^4.2.0"
+  }
+}
