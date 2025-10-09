@@ -3,6 +3,11 @@
 
 # 🧠 Technical Delivery — OG Gateway (Built on MetaLayer)
 
+Demo:
+
+ [![Watch on YouTube](https://img.youtube.com/vi/xb2ljnOQZ-Y/0.jpg)](https://youtu.be/xb2ljnOQZ-Y)
+
+
 ## Overview
 
 The **OG Gateway** is a **stateless HTTP bridge** for the **OG Storage Network**, enabling **direct in-browser access** to on-chain, content-addressed data — without requiring users to download files or run an OG node.
