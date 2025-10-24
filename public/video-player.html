@@ -1,0 +1,412 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>OG Gateway Player (demo)</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding: 18px; }
+      label, button { margin: 6px 6px 6px 0; }
+      pre { white-space: pre-wrap; max-width: 90%; background:#f6f6f6; padding:12px; border:1px solid #ddd; }
+      img { max-width: 90%; display:block; margin-top:12px; }
+      video, iframe { display:block; max-width: 90%; margin-top:12px; }
+    </style>
+
+    <!-- INJECT_ROOT_HASH -->
+  </head>
+  <body>
+    <h3>OG Gateway Player</h3>
+
+    <div>
+      <label>Root hash:
+        <input id="root" style="width:520px" placeholder="0x..." />
+      </label>
+    </div>
+
+    <div style="margin-top:8px">
+      <button id="download">Download & store (stream → IndexedDB)</button>
+      <button id="playBlob">Play stored blob</button>
+      <button id="playCached">Play via SW (/cached-files/...)</button>
+      <button id="registerSw">Register service worker</button>
+      <button id="autoPlayToggle">Auto-play on load: <span id="autoplayValue">off</span></button>
+      <button id="deleteStored">Delete stored</button>
+    </div>
+
+    <div id="status" style="margin-top:12px;color:#333"></div>
+
+    <video id="player" controls style="display:block; max-width:90%; margin-top:12px"></video>
+
+    <script>
+      // ---------- tiny helpers & UI references ----------
+      const statusEl = document.getElementById('status');
+      const player = document.getElementById('player');
+      const rootInput = document.getElementById('root');
+      const autoplayValue = document.getElementById('autoplayValue');
+      let autoPlayOnLoad = false;
+      function setStatus(s) { statusEl.textContent = s; }
+
+      function normalizeRoot(r) {
+        if (!r) return null;
+        r = r.trim();
+        if (r.startsWith('/')) r = r.slice(1);
+        if (!r.startsWith('0x') && /^[0-9a-fA-F]{64}$/.test(r)) r = '0x' + r;
+        return r;
+      }
+
+      function readRootFromUrl() {
+        if (window.__OG_ROOT_FROM_SERVER) return normalizeRoot(window.__OG_ROOT_FROM_SERVER);
+        const q = new URLSearchParams(location.search);
+        if (q.get('root')) return normalizeRoot(q.get('root'));
+        const p = location.pathname.replace(/^\/+|\/+$/g, '');
+        if (!p) return null;
+        if (p.startsWith('cached-files') || p.startsWith('api')) return null;
+        if (/^(0x)?[0-9a-fA-F]{64}$/.test(p)) return normalizeRoot(p);
+        return null;
+      }
+
+      document.getElementById('autoPlayToggle').onclick = () => {
+        autoPlayOnLoad = !autoPlayOnLoad;
+        autoplayValue.textContent = autoPlayOnLoad ? 'on' : 'off';
+      };
+
+      // ---------- Service worker registration ----------
+      document.getElementById('registerSw').onclick = async () => {
+        if ('serviceWorker' in navigator) {
+          try {
+            const reg = await navigator.serviceWorker.register('/sw-chunked.js');
+            setStatus('SW registered: ' + reg.scope);
+          } catch (e) {
+            setStatus('SW reg failed: ' + e);
+          }
+        } else {
+          setStatus('SW not supported');
+        }
+      };
+
+      // ---------- Simple key/value DB helpers (legacy blob store) ----------
+      const DB_NAME = 'og-gateway-db';
+      const STORE_FILES = 'files';
+      function openDB() {
+        return new Promise((resolve, reject) => {
+          const r = indexedDB.open(DB_NAME, 1);
+          r.onupgradeneeded = () => {
+            const db = r.result;
+            if (!db.objectStoreNames.contains(STORE_FILES)) {
+              db.createObjectStore(STORE_FILES, { keyPath: 'key' });
+            }
+          };
+          r.onsuccess = () => resolve(r.result);
+          r.onerror = () => reject(r.error);
+        });
+      }
+      async function idbPut(key, value) {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_FILES, 'readwrite');
+          tx.objectStore(STORE_FILES).put({ key, value });
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      }
+      async function idbGet(key) {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_FILES, 'readonly');
+          const r = tx.objectStore(STORE_FILES).get(key);
+          r.onsuccess = () => resolve(r.result?.value ?? null);
+          r.onerror = () => reject(r.error);
+        });
+      }
+      async function idbDelete(key) {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_FILES, 'readwrite');
+          tx.objectStore(STORE_FILES).delete(key);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      }
+
+      // ---------- Stream-to-IDB implementation (robust incremental storage) ----------
+      const STREAM_DB = 'og-stream-db';
+      const META_STORE = 'meta';
+      const CHUNK_STORE = 'chunks';
+
+      function openStreamDB() {
+        return new Promise((resolve, reject) => {
+          const r = indexedDB.open(STREAM_DB, 1);
+          r.onupgradeneeded = () => {
+            const db = r.result;
+            if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE, { keyPath: 'key' });
+            if (!db.objectStoreNames.contains(CHUNK_STORE)) db.createObjectStore(CHUNK_STORE, { keyPath: 'key' });
+          };
+          r.onsuccess = () => resolve(r.result);
+          r.onerror = () => reject(r.error);
+        });
+      }
+
+      async function idbPutStream(storeName, obj) {
+        const db = await openStreamDB();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(storeName, 'readwrite');
+          tx.objectStore(storeName).put(obj);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      }
+      async function idbGetStream(storeName, key) {
+        const db = await openStreamDB();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(storeName, 'readonly');
+          const r = tx.objectStore(storeName).get(key);
+          r.onsuccess = () => resolve(r.result ?? null);
+          r.onerror = () => reject(r.error);
+        });
+      }
+      async function idbDeleteStream(storeName, key) {
+        const db = await openStreamDB();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(storeName, 'readwrite');
+          tx.objectStore(storeName).delete(key);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      }
+
+      async function storeChunk(root, index, arrayBuffer) {
+        const key = `${root}::${index}`;
+        return idbPutStream(CHUNK_STORE, { key, root, index, buf: arrayBuffer });
+      }
+
+      async function saveMeta(root, meta) {
+        return idbPutStream(META_STORE, { key: root, ...meta });
+      }
+      async function readMeta(root) {
+        return idbGetStream(META_STORE, root);
+      }
+
+      async function getAllChunksForRoot(root) {
+        const db = await openStreamDB();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(CHUNK_STORE, 'readonly');
+          const store = tx.objectStore(CHUNK_STORE);
+          const req = store.openCursor();
+          const chunks = [];
+          req.onsuccess = (e) => {
+            const cur = e.target.result;
+            if (!cur) {
+              chunks.sort((a,b)=>a.index-b.index);
+              return resolve(chunks);
+            }
+            const v = cur.value;
+            if (v && v.root === root) chunks.push({ index: v.index, buf: v.buf });
+            cur.continue();
+          };
+          req.onerror = () => reject(req.error);
+        });
+      }
+
+      async function deleteStoredStream(root) {
+        const db = await openStreamDB();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction(CHUNK_STORE, 'readwrite');
+          const store = tx.objectStore(CHUNK_STORE);
+          const req = store.openCursor();
+          req.onsuccess = (e) => {
+            const cur = e.target.result;
+            if (!cur) return resolve();
+            const v = cur.value;
+            if (v && v.root === root) cur.delete();
+            cur.continue();
+          };
+          req.onerror = () => reject(req.error);
+        });
+        await idbDeleteStream(META_STORE, root);
+      }
+
+      // Stream and store: incremental download into IDB
+      // usage: await downloadStreamAndStore(root);
+      async function downloadStreamAndStore(root, gatewayBase = '/api/v1/storage') {
+        const url = `${gatewayBase}/${root}`;
+        setStatus('fetching ' + url);
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('fetch failed: ' + resp.status);
+        const contentType = resp.headers.get('content-type') || 'application/octet-stream';
+        await saveMeta(root, { key: root, contentType, bytesWritten: 0, chunkCount: 0, startedAt: Date.now() });
+
+        const reader = resp.body.getReader();
+        let idx = 0;
+        let total = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const ab = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+          await storeChunk(root, idx, ab);
+          idx += 1;
+          total += ab.byteLength;
+          if (idx % 8 === 0) {
+            await saveMeta(root, { key: root, contentType, bytesWritten: total, chunkCount: idx, updatedAt: Date.now() });
+            setStatus(`downloaded ${Math.round(total/1024)} KB (${idx} chunks)`);
+          }
+        }
+        await saveMeta(root, { key: root, contentType, bytesWritten: total, chunkCount: idx, finishedAt: Date.now() });
+        setStatus(`download complete — ${Math.round(total/1024)} KB in ${idx} chunks`);
+        // also store a single-blob record for backward compatibility (optional)
+        try {
+          const parts = (await getAllChunksForRoot(root)).map(c => c.buf);
+          const blob = new Blob(parts, { type: contentType });
+          await idbPut(root, { blob, contentType, savedAt: Date.now() });
+        } catch (e) {
+          // ignore if assembling fails due to memory
+        }
+        return { root, contentType, bytesWritten: total, chunkCount: idx };
+      }
+
+      // Reassemble stored chunks into Blob
+      async function assembleBlob(root) {
+        const chunks = await getAllChunksForRoot(root);
+        if (!chunks || chunks.length === 0) return null;
+        const parts = chunks.map(c => c.buf);
+        const meta = await readMeta(root) || {};
+        const mime = meta.contentType || '';
+        const blob = new Blob(parts, { type: mime });
+        return blob;
+      }
+
+      // Play from stored data (stream-assembled)
+      async function playFromStored(root) {
+        const meta = await readMeta(root);
+        if (!meta) throw new Error('no meta stored');
+        const mime = meta.contentType || '';
+        const blob = await assembleBlob(root);
+        if (!blob) throw new Error('no blob/chunks');
+
+        if (mime.startsWith('text/') || mime === 'application/json') {
+          const txt = await blob.text();
+          let pre = document.getElementById('textView');
+          if (!pre) {
+            pre = document.createElement('pre');
+            pre.id = 'textView';
+            document.body.appendChild(pre);
+          }
+          pre.textContent = txt;
+          const img = document.getElementById('imageView'); if (img) img.style.display = 'none';
+          player.style.display = 'none';
+          setStatus('displaying text from stored chunks');
+          return;
+        }
+
+        if (mime.startsWith('image/')) {
+          const url = URL.createObjectURL(blob);
+          let img = document.getElementById('imageView');
+          if (!img) {
+            img = document.createElement('img');
+            img.id = 'imageView';
+            document.body.appendChild(img);
+          }
+          img.src = url;
+          img.onload = () => URL.revokeObjectURL(url);
+          player.style.display = 'none';
+          const pre = document.getElementById('textView'); if (pre) pre.style.display = 'none';
+          setStatus('displaying image from stored chunks');
+          return;
+        }
+
+        // default: media
+        const url = URL.createObjectURL(blob);
+        player.style.display = 'block';
+        player.src = url;
+        player.onended = () => URL.revokeObjectURL(url);
+        setStatus('playing blob assembled from chunks');
+      }
+
+      // ---------- UI bindings ----------
+      document.getElementById('download').onclick = async () => {
+        const root = normalizeRoot(rootInput.value);
+        if (!root) return alert('enter rootHash');
+        try {
+          setStatus('starting streaming download...');
+          await downloadStreamAndStore(root);
+        } catch (e) {
+          console.error(e);
+          setStatus('download error: ' + e);
+        }
+      };
+
+      document.getElementById('playBlob').onclick = async () => {
+        const root = normalizeRoot(rootInput.value);
+        if (!root) return alert('enter rootHash');
+        try {
+          // try stream-assembled play first
+          await playFromStored(root);
+        } catch (e) {
+          // fallback to legacy blob store if present
+          const rec = await idbGet(root);
+          if (rec && rec.blob) {
+            const type = rec.contentType || '';
+            if (type.startsWith('text/') || type === 'application/json') {
+              const txt = await rec.blob.text();
+              let pre = document.getElementById('textView');
+              if (!pre) { pre = document.createElement('pre'); pre.id = 'textView'; document.body.appendChild(pre); }
+              pre.textContent = txt;
+              player.style.display = 'none';
+              setStatus('displaying text from legacy blob');
+              return;
+            }
+            if (type.startsWith('image/')) {
+              const url = URL.createObjectURL(rec.blob);
+              let img = document.getElementById('imageView');
+              if (!img) { img = document.createElement('img'); img.id = 'imageView'; document.body.appendChild(img); }
+              img.src = url; img.onload = () => URL.revokeObjectURL(url);
+              player.style.display = 'none';
+              setStatus('displaying image from legacy blob');
+              return;
+            }
+            const url = URL.createObjectURL(rec.blob);
+            player.style.display = 'block';
+            player.src = url;
+            player.onended = () => URL.revokeObjectURL(url);
+            setStatus('playing legacy blob');
+            return;
+          }
+          setStatus('no stored blob/chunks: ' + e);
+        }
+      };
+
+      document.getElementById('playCached').onclick = async () => {
+        const root = normalizeRoot(rootInput.value);
+        if (!root) return alert('enter rootHash');
+        player.src = `/cached-files/${root}.mp4`;
+        setStatus('playing via /cached-files/' + root);
+      };
+
+      document.getElementById('deleteStored').onclick = async () => {
+        const root = normalizeRoot(rootInput.value);
+        if (!root) return alert('enter rootHash');
+        await deleteStoredStream(root);
+        await idbDelete(root).catch(()=>{});
+        setStatus('deleted stored data for ' + root);
+      };
+
+      // On load: prefill root and optional autoplay
+      (async function init() {
+        const fromUrl = readRootFromUrl();
+        if (fromUrl) {
+          rootInput.value = fromUrl;
+          setStatus('root prefilled from URL');
+          const q = new URLSearchParams(location.search);
+          if (q.get('play') === '1' || (window.__OG_ROOT_FROM_SERVER && q.get('autoplay') !== '0')) {
+            if ('serviceWorker' in navigator && !navigator.serviceWorker.controller) {
+              try { await navigator.serviceWorker.register('/sw-chunked.js'); setStatus('sw registered'); } catch(e) {}
+            }
+            setTimeout(() => {
+              player.src = `/cached-files/${fromUrl}.mp4`;
+              setStatus('auto-playing via /cached-files/' + fromUrl);
+              player.play().catch(() => {});
+            }, 300);
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>

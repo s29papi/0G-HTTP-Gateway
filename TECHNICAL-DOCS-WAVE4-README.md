@@ -1,109 +1,145 @@
+Perfect — here’s a polished markdown summary, written in the same technical tone and structure as your OG Gateway example, but describing the **browser-based IndexedDB caching extension** we just built:
 
 ---
 
-# 🧠 Technical Delivery — OG Gateway (Built on MetaLayer)
+# 🧠 Technical Delivery — OG Gateway + Browser Caching (MetaLayer Integration)
 
-Demo:
+## 🧠 Key Insight
 
- [![Watch on YouTube](https://img.youtube.com/vi/xb2ljnOQZ-Y/0.jpg)](https://youtu.be/xb2ljnOQZ-Y)
+Instead of downloading OG files to disk or storing them in a temp folder, this system makes **the browser the storage node**.
+The IndexedDB-backed cache gives users direct, persistent access to decentralized data — with zero backend persistence.
 
+This creates a **true hybrid** between decentralized storage and client-side persistence:
+fast, offline-ready, and directly accessible through a simple browser URL.
+
+---
+
+---
 
 ## Overview
 
-The **OG Gateway** is a **stateless HTTP bridge** for the **OG Storage Network**, enabling **direct in-browser access** to on-chain, content-addressed data — without requiring users to download files or run an OG node.
+The **OG Gateway + Browser Cache** is an enhanced version of the OG stateless gateway, designed to make **decentralized OG content directly viewable and persistently stored inside the browser** — without saving files to disk or re-fetching from the network.
 
-This project was built on **MetaLayer**, leveraging its on-chain context and network SDKs to resolve file metadata and Content-Type directly from OGFileCtx.
+It combines:
 
-By combining the **MetaLayer client**, **0G Indexer**, and an **Express-based streaming server**, we implemented a fully operational gateway that serves OG content over standard HTTP semantics — supporting range requests, caching, and inline rendering.
+* The **MetaLayer-powered OG Gateway** (Express backend for streaming decentralized files)
+* A **browser client (video-player.html)** that downloads, caches, and replays files entirely from **IndexedDB**
+* An optional **service worker (sw-chunked.js)** to support **offline playback** and **progressive chunk caching**
+
+This approach moves OG data closer to users — stored directly inside their browser’s local storage, accessible instantly, even offline.
 
 ---
 
 ## ⚙️ Core Accomplishments
 
-* **Built on MetaLayer:**
-  Uses `@searchboxlabs/metalayer` to fetch on-chain file context (`getOnchainAwareCtx`), enabling dynamic detection of MIME types and file extensions.
+* **Client-Side Persistence with IndexedDB:**
+  Files fetched from the OG Gateway are saved in the user’s browser using IndexedDB, allowing **replay without re-downloading**.
 
-* **Fully Stateless Gateway:**
-  The gateway does not maintain persistent state; all responses are streamed and cached on-demand from OG’s distributed storage layer.
+* **Offline Playback (Service Worker):**
+  With `sw-chunked.js`, fetched chunks are cached progressively, allowing offline viewing of previously fetched OG files.
 
-* **Streaming + Range Requests:**
-  Implements HTTP Range support, allowing smooth **video/audio seeking** and partial content delivery (e.g., `206 Partial Content`).
+* **Hash-Based Access Model:**
+  Users simply visit `/0x<rootHash>` — the gateway serves a dynamic HTML player that fetches and displays content tied to that root hash.
 
-* **Disk Caching with LRU Eviction:**
-  Integrates an **LRU cache** to temporarily store recently accessed files on disk, automatically deleting least-used files after expiry.
+* **Zero Server Writes:**
+  The backend never stores permanent data; caching happens entirely in-memory or within the browser — preserving statelessness.
 
-* **Concurrency-Safe Downloads:**
-  Uses a lightweight locking map (`downloadLocks`) to **deduplicate concurrent downloads** of the same CID/rootHash, improving efficiency.
+* **Dynamic MIME Handling:**
+  The backend and client both use `MetaLayer` metadata and file extensions to determine playback type (video, image, text, etc.).
 
-* **Automatic MIME Detection:**
-  Uses `mime` and on-chain metadata to determine `Content-Type`, ensuring proper inline rendering in browsers.
+* **Full Range + Streaming Support:**
+  Compatible with HTTP range requests for efficient playback and streaming of large media files.
 
-* **CORS + Inline Rendering:**
-  Enables cross-origin access and sets `Content-Disposition: inline`, allowing **direct browser playback or display** instead of forced downloads.
-
-* **Simple Deployment:**
-  Runs as a single Node.js service — deployable on any VPS, container, or serverless function.
+* **Cross-Origin Compatibility:**
+  The gateway sets permissive CORS headers, allowing browser fetches and service workers to access data directly.
 
 ---
 
 ## 🧩 Design Decisions
 
-| Component            | Role                             | Reasoning                                          |
-| -------------------- | -------------------------------- | -------------------------------------------------- |
-| **MetaLayer Client** | Fetch on-chain OG file context   | Reliable way to derive file type and metadata      |
-| **0G Indexer**       | Fetch file data via content hash | Decentralized and verifiable data retrieval        |
-| **Express.js**       | Lightweight HTTP interface       | Familiar, flexible, and scalable                   |
-| **LRU Disk Cache**   | Temporary local file storage     | Improves repeat access latency without state bloat |
-| **Range Support**    | Handles partial requests         | Enables seamless media streaming                   |
-| **Stateless Design** | No persistent DB                 | Simpler scaling and easier reliability             |
+| Component             | Role                                | Reasoning                                             |
+| --------------------- | ----------------------------------- | ----------------------------------------------------- |
+| **OG Gateway**        | Streams files from the 0G Indexer   | Efficient HTTP interface to decentralized storage     |
+| **video-player.html** | Browser UI for playback and caching | User-friendly way to interact with decentralized data |
+| **IndexedDB**         | Persistent client-side storage      | Enables replays without refetching                    |
+| **Service Worker**    | Background cache handler            | Enables offline access and chunked caching            |
+| **MetaLayer Client**  | On-chain metadata resolution        | Derives MIME types and context from OGFileCtx         |
+| **Stateless Design**  | No backend persistence              | Keeps gateway lightweight and scalable                |
 
 ---
 
 ## 🧠 How It Works
 
 ```
-Browser → OG Gateway → MetaLayer (on-chain ctx)
-                      ↳ 0G Indexer → OG Storage Nodes
+Browser (video-player.html)
+   ↓ fetches via HTTP
+OG Gateway (Express + MetaLayer)
+   ↓ resolves metadata
+0G Indexer → OG Storage Nodes
 ```
 
-1. **Request:**
-   The browser requests `GET /api/v1/storage/:rootHash`.
+1. **User Access:**
+   The user visits `/0x<rootHash>` or enters a root hash in the browser page.
+   The gateway dynamically serves `video-player.html` with that root hash injected.
 
-2. **Resolve Context:**
-   The gateway queries MetaLayer for file metadata (e.g., MIME type, extension).
+2. **Download & Cache:**
+   The client fetches `/api/v1/storage/:rootHash`, streams the file, and stores it in **IndexedDB**.
 
-3. **Fetch Data:**
-   The Indexer downloads the file from OG Storage into a temporary cache.
+3. **Replay (Offline):**
+   On reload or offline mode, the client retrieves the blob directly from IndexedDB (or the service worker cache) and renders it instantly.
 
-4. **Stream Response:**
-   The gateway streams the file back to the client with correct headers.
-
-5. **Evict Old Files:**
-   Cached files are automatically deleted after TTL or capacity overflow.
+4. **Stateless Backend:**
+   The Express gateway only proxies and streams — no files are permanently written server-side.
 
 ---
 
 ## 💻 Example Usage
 
+### 1️⃣ Start the Gateway
+
 ```bash
-curl http://localhost:3000/api/v1/storage/0xda5255f73287096e526638ea0ebc036c5a52d5fbd73c56a20e795e78e7a22735
+yarn ts-node src/gateway.ts
 ```
 
-or open directly in a browser:
+### 2️⃣ Open in Browser
 
 ```
-http://localhost:3000/api/v1/storage/0xda5255f73287096e526638ea0ebc036c5a52d5fbd73c56a20e795e78e7a22735
+http://127.0.0.1:5133/0xda5255f73287096e526638ea0ebc036c5a52d5fbd73c56a20e795e78e7a22735
+```
+
+### 3️⃣ In the Page
+
+* Click **“Download & Cache”** → file fetched and stored in IndexedDB
+* Click **“Play Blob”** → file is played directly from local storage
+* Reload → still playable without fetching again
+
+---
+
+## 🧩 File Structure
+
+```
+project/
+ ├── src/
+ │    └── gateway.ts         # Express + MetaLayer + 0G Indexer integration
+ └── public/
+      ├── video-player.html  # Main client UI for viewing/caching
+      └── sw-chunked.js      # Optional service worker for offline caching
 ```
 
 ---
+
+
 
 ## 🏁 Outcome
 
-The **OG Gateway** demonstrates how decentralized storage on OG can be made **directly accessible from any web browser**, using standard HTTP without downloads or custom clients.
+The **OG Gateway + Browser Caching Layer** delivers the full vision of a **web-native decentralized data experience**:
 
-By translating **content-addressed data** into **web-native streams**, it bridges the gap between decentralized storage and traditional web access — enabling seamless in-browser rendering, media playback, and integration with existing web apps.
+✅ Instant in-browser playback
+✅ Persistent local storage
+✅ Offline access
+✅ No local OG node required
+✅ Fully stateless backend
 
-The gateway is **lightweight, stateless, and verifiable**, designed for real-world scalability. It serves as a foundation for a future where **OG-powered content** can be accessed as easily as any HTTP resource — a true **OG → Web bridge** for decentralized data.
+It turns OG’s decentralized storage into **a user-facing, browser-cached web experience** — the foundation for decentralized applications that feel just as responsive and reliable as traditional web apps.
 
 ---
-
